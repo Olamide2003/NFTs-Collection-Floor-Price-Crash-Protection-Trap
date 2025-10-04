@@ -1,0 +1,20 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+remappings = [
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@forge-std/=lib/forge-std/src/"
+]
+solc_version = "0.8.30"
+
+[rpc_endpoints]
+hoodi_testnet = "https://ethereum-hoodi-rpc.publicnode.com"
+localhost = "http://127.0.0.1:8545"
+
+[etherscan]
+hoodi_testnet = { key = "${ETHERSCAN_API_KEY}", chain = 560048 }
+
+[profile.fs]
+read = true
+write = true

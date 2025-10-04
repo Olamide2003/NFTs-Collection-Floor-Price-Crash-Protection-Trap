@@ -1,0 +1,42 @@
+# Drosera Configuration for NFT Floor Price Crash Trap
+# Network: Hoodi Testnet
+
+[network]
+ethereum_rpc = "https://rpc.hoodi.ethpandaops.io"
+drosera_rpc = "https://relay.hoodi.drosera.io"
+eth_chain_id = 560048
+drosera_address = "0x91cB447BaFc6e0EA0F4Fe056F5a9b1F14bb06e5D"
+
+[traps.nft_floor_crash]
+# Path to compiled trap contract JSON
+path = "out/NFTFloorPriceCrashTrap.sol/NFTFloorPriceCrashTrap.json"
+
+# CRITICAL: Update this address after deploying NFTFloorProtectionResponse
+response_contract = "0x1b18C71429B87f5F0c34475606492Cd0C13B704b"
+
+# CRITICAL: Function signature MUST match the response contract
+# Notice the 'address' parameter after 'string' - this was missing in your original config
+response_function = "respondToCrash(string,address,uint256,uint256,uint8,uint256,uint256)"
+
+# Cooldown period between triggers (25 blocks ≈ 5 minutes)
+cooldown_period_blocks = 25
+
+# Number of operators required to validate trigger
+min_number_of_operators = 1
+max_number_of_operators = 3
+
+# Number of blocks to collect data from for analysis
+block_sample_size = 20
+
+# Privacy settings
+private = true
+private_trap = true
+
+# Whitelist of operator addresses (update with your operator addresses)
+whitelist = [
+    "0x0AAB1334D95633771aD341005bcDD9190297CeFe"
+]
+
+# CRITICAL: Update this address after deploying NFTFloorPriceCrashTrap
+# Leave commented out until first deployment
+# address = "0xe12B581141f2e1B029F45920300DB648e0e355A2"

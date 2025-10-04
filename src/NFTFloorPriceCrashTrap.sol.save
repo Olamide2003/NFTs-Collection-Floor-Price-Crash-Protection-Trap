@@ -1,0 +1,317 @@
+er: MIT
+pragma solidity ^0.8.19;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+
+interface ITrap {
+    function collect() external;
+    function isValid() external view returns (bool);
+}
+
+interface INFTMarketplace {
+    function getFloorPrice(address collection) external view returns (uint256);
+    function getVolume24h(address collection) external view returns (uint256);
+    function getTotalSupply(address collection) external view returns (uint256);
+    function getListedCount(address collection) external view returns (uint256);
+}
+
+/**
+ * @title NFTFloorPriceCrashTrap
+ * @dev Monitors NFT collection floor prices and detects potential manipulation or crashes
+ * @notice This trap detects rapid floor price drops combined with unusual selling patterns
+ */
+contract NFTFloorPriceCrashTrap is ITrap, Ownable, ReentrancyGuard {
+    
+    // Struct to store NFT collection data
+    struct CollectionData {
+        uint256 currentFloorPrice;
+        uint256 previousFloorPrice;
+        uint256 volume24h;
+        uint256 totalSupply;
+        uint256 listedCount;
+        uint256 lastUpdateBlock;
+        uint256 priceDropPercentage;
+        bool isActive;
+    }
+    
+    // Struct to store trap parameters
+    struct TrapConfig {
+        uint256 maxPriceDropPercentage;     // Maximum allowed price drop (e.g., 30%)
+        uint256 minVolumeIncrease;          // Minimum volume increase to trigger (e.g., 200%)
+        uint256 maxListingRatio;            // Maximum listing ratio (listed/total supply, e.g., 20%)
+        uint256 timeWindow;                 // Time window for analysis (in blocks)
+        uint256 minFloorPrice;              // Minimum floor price to consider (in wei)
+    }
+    
+    // State variables
+    mapping(address => CollectionData) public collections;
+    address[] public trackedCollections;
+    TrapConfig public config;
+    INFTMarketplace public marketplace;
+    
+    // Events
+    event CollectionAdded(address indexed collection);
+    event CollectionRemoved(address indexed collection);
+    event FloorPriceCrashDetected(address indexed collection, uint256 oldPrice, uint256 newPrice, uint256 dropPercentage);
+    event ConfigUpdated();
+    event DataCollected(address indexed collection, uint256 floorPrice, uint256 volume);
+    
+    // Modifiers
+    modifier onlyValidCollection(address collection) {
+        require(collections[collection].isActive, "Collection not tracked");
+        _;
+    }
+    
+    constructor(
+        address _marketplace,
+        address _initialOwner
+    ) {
+        marketplace = INFTMarketplace(_marketplace);
+        
+        // Default configuration
+        config = TrapConfig({
+            maxPriceDropPercentage: 30,      // 30% max drop
+            minVolumeIncrease: 200,          // 200% volume increase
+            maxListingRatio: 20,             // 20% listing ratio
+            timeWindow: 100,                 // 100 blocks (~20 minutes)
+            minFloorPrice: 0.01 ether        // 0.01 ETH minimum
+        });
+        
+        _transferOwnership(_initialOwner);
+    }
+    
+    /**
+     * @dev Add NFT collection to monitoring
+     * @param collection Address of the NFT collection contract
+     */
+    function addCollection(address collection) external onlyOwner {
+        require(collection != address(0), "Invalid collection address");
+        require(!collections[collection].isActive, "Collection already tracked");
+        
+        // Initialize collection data
+        uint256 currentPrice = marketplace.getFloorPrice(collection);
+        require(currentPrice >= config.minFloorPrice, "Floor price too low");
+        
+        collections[collection] = CollectionData({
+            currentFloorPrice: currentPrice,
+            previousFloorPrice: currentPrice,
+            volume24h: marketplace.getVolume24h(collection),
+            totalSupply: marketplace.getTotalSupply(collection),
+            listedCount: marketplace.getListedCount(collection),
+            lastUpdateBlock: block.number,
+            priceDropPercentage: 0,
+            isActive: true
+        });
+        
+        trackedCollections.push(collection);
+        emit CollectionAdded(collection);
+    }
+    
+    /**
+     * @dev Remove NFT collection from monitoring
+     * @param collection Address of the NFT collection contract
+     */
+    function removeCollection(address collection) external onlyOwner onlyValidCollection(collection) {
+        collections[collection].isActive = false;
+        
+        // Remove from tracked collections array
+        for (uint i = 0; i < trackedCollections.length; i++) {
+            if (trackedCollections[i] == collection) {
+                trackedCollections[i] = trackedCollections[trackedCollections.length - 1];
+                trackedCollections.pop();
+                break;
+            }
+        }
+        
+        emit CollectionRemoved(collection);
+    }
+    
+    /**
+     * @dev Update trap configuration
+     * @param _maxPriceDropPercentage Maximum allowed price drop percentage
+     * @param _minVolumeIncrease Minimum volume increase percentage
+     * @param _maxListingRatio Maximum listing ratio percentage
+     * @param _timeWindow Time window in blocks
+     * @param _minFloorPrice Minimum floor price in wei
+     */
+    function updateConfig(
+        uint256 _maxPriceDropPercentage,
+        uint256 _minVolumeIncrease,
+        uint256 _maxListingRatio,
+        uint256 _timeWindow,
+        uint256 _minFloorPrice
+    ) external onlyOwner {
+        require(_maxPriceDropPercentage > 0 && _maxPriceDropPercentage <= 100, "Invalid price drop percentage");
+        require(_minVolumeIncrease > 0, "Invalid volume increase");
+        require(_maxListingRatio > 0 && _maxListingRatio <= 100, "Invalid listing ratio");
+        require(_timeWindow > 0, "Invalid time window");
+        
+        config.maxPriceDropPercentage = _maxPriceDropPercentage;
+        config.minVolumeIncrease = _minVolumeIncrease;
+        config.maxListingRatio = _maxListingRatio;
+        config.timeWindow = _timeWindow;
+        config.minFloorPrice = _minFloorPrice;
+        
+        emit ConfigUpdated();
+    }
+    
+    /**
+     * @dev Collect data from all tracked NFT collections
+     * @notice This function is called by Drosera operators to gather on-chain data
+     */
+    function collect() external override nonReentrant {
+        require(trackedCollections.length > 0, "No collections to monitor");
+        
+        for (uint i = 0; i < trackedCollections.length; i++) {
+            address collection = trackedCollections[i];
+            if (!collections[collection].isActive) continue;
+            
+            _updateCollectionData(collection);
+        }
+    }
+    
+    /**
+     * @dev Check if any collection triggers the trap condition
+     * @return bool True if trap condition is met, false otherwise
+     */
+    function isValid() external view override returns (bool) {
+        for (uint i = 0; i < trackedCollections.length; i++) {
+            address collection = trackedCollections[i];
+            if (!collections[collection].isActive) continue;
+            
+            if (_checkTrapCondition(collection)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * @dev Internal function to update collection data
+     * @param collection Address of the NFT collection
+     */
+    function _updateCollectionData(address collection) internal {
+        CollectionData storage data = collections[collection];
+        
+        // Store previous price before updating
+        data.previousFloorPrice = data.currentFloorPrice;
+        
+        // Get fresh data from marketplace
+        data.currentFloorPrice = marketplace.getFloorPrice(collection);
+        data.volume24h = marketplace.getVolume24h(collection);
+        data.totalSupply = marketplace.getTotalSupply(collection);
+        data.listedCount = marketplace.getListedCount(collection);
+        
+        // Calculate price drop percentage
+        if (data.previousFloorPrice > 0) {
+            if (data.currentFloorPrice < data.previousFloorPrice) {
+                data.priceDropPercentage = ((data.previousFloorPrice - data.currentFloorPrice) * 100) / data.previousFloorPrice;
+            } else {
+                data.priceDropPercentage = 0;
+            }
+        }
+        
+        data.lastUpdateBlock = block.number;
+        
+        emit DataCollected(collection, data.currentFloorPrice, data.volume24h);
+        
+        // Check if this update triggers a crash detection
+        if (_checkTrapCondition(collection)) {
+            emit FloorPriceCrashDetected(
+                collection,
+                data.previousFloorPrice,
+                data.currentFloorPrice,
+                data.priceDropPercentage
+            );
+        }
+    }
+    
+    /**
+     * @dev Check if a collection meets the trap condition
+     * @param collection Address of the NFT collection
+     * @return bool True if trap condition is met
+     */
+    function _checkTrapCondition(address collection) internal view returns (bool) {
+        CollectionData memory data = collections[collection];
+        
+        // Skip if data is stale
+        if (block.number - data.lastUpdateBlock > config.timeWindow) {
+            return false;
+        }
+        
+        // Skip if floor price is below minimum threshold
+        if (data.currentFloorPrice < config.minFloorPrice) {
+            return false;
+        }
+        
+        // Condition 1: Significant price drop
+        bool significantDrop = data.priceDropPercentage >= config.maxPriceDropPercentage;
+        
+        // Condition 2: High listing ratio (potential dump)
+        uint256 listingRatio = data.totalSupply > 0 ? (data.listedCount * 100) / data.totalSupply : 0;
+        bool highListingRatio = listingRatio >= config.maxListingRatio;
+        
+        // Condition 3: Volume spike (indicating coordinated selling)
+        bool volumeSpike = false;
+        if (data.previousFloorPrice > 0) {
+            // Calculate expected normal volume based on price stability
+            uint256 expectedVolume = data.totalSupply / 10; // Assume 10% normal turnover
+            volumeSpike = data.volume24h > (expectedVolume * config.minVolumeIncrease) / 100;
+        }
+        
+        // Trigger if significant drop + (high listing ratio OR volume spike)
+        return significantDrop && (highListingRatio || volumeSpike);
+    }
+    
+    /**
+     * @dev Get collection data for a specific collection
+     * @param collection Address of the NFT collection
+     * @return CollectionData struct with current data
+     */
+    function getCollectionData(address collection) external view returns (CollectionData memory) {
+        return collections[collection];
+    }
+    
+    /**
+     * @dev Get all tracked collections
+     * @return Array of collection addresses
+     */
+    function getTrackedCollections() external view returns (address[] memory) {
+        return trackedCollections;
+    }
+    
+    /**
+     * @dev Get trap configuration
+     * @return TrapConfig struct with current configuration
+     */
+    function getTrapConfig() external view returns (TrapConfig memory) {
+        return config;
+    }
+    
+    /**
+     * @dev Manual trigger for testing purposes (owner only)
+     * @param collection Address of the collection to test
+     */
+    function manualTrigger(address collection) external onlyOwner onlyValidCollection(collection) {
+        emit FloorPriceCrashDetected(
+            collection,
+            collections[collection].previousFloorPrice,
+            collections[collection].currentFloorPrice,
+            collections[collection].priceDropPercentage
+        );
+    }
+    
+    /**
+     * @dev Emergency pause function
+     */
+    function emergencyPause() external onlyOwner {
+        // Clear all tracked collections
+        for (uint i = 0; i < trackedCollections.length; i++) {
+            collections[trackedCollections[i]].isActive = false;
+        }
+        delete trackedCollections;
+    }
+}
+
