@@ -59,8 +59,8 @@ The trap uses dual oracle validation to ensure price accuracy and employs statis
 **Network**: Hoodi Testnet (Chain ID: 560048)
 
 **Deployed Contracts**:
-- Response Contract: `0x1c446Def189616AB89a10f538a9Aed89b7b2ecE5`
-- Trap Contract: `0x15c08F2D5e8C23fA43926F1E5F698553202FAf85`
+- Response Contract: `0x1b18C71429B87f5F0c34475606492Cd0C13B704b`
+- Trap Contract: `0xe12B581141f2e1B029F45920300DB648e0e355A2`
 
 ## Quick Start
 
